@@ -21,54 +21,23 @@ class SimBase:
         self._cmd_time = 0.0
         self._is_velocity_mode = False
 
-        state = self._server.get_state()
-        self._origin_x = state.base_x
-        self._origin_y = state.base_y
-        self._origin_theta = state.base_theta
-        print(f"[base-bridge] Origin: x={self._origin_x:.3f}, "
-              f"y={self._origin_y:.3f}, theta={self._origin_theta:.3f}")
-
-    def _world_to_sdk(self, x, y, theta):
-        dx = x - self._origin_x
-        dy = y - self._origin_y
-        cos_o = np.cos(-self._origin_theta)
-        sin_o = np.sin(-self._origin_theta)
-        sdk_x = cos_o * dx - sin_o * dy
-        sdk_y = sin_o * dx + cos_o * dy
-        sdk_theta = self._angle_wrap(theta - self._origin_theta)
-        return sdk_x, sdk_y, sdk_theta
-
-    def _sdk_to_world(self, sdk_x, sdk_y, sdk_theta):
-        cos_o = np.cos(self._origin_theta)
-        sin_o = np.sin(self._origin_theta)
-        x = self._origin_x + cos_o * sdk_x - sin_o * sdk_y
-        y = self._origin_y + sin_o * sdk_x + cos_o * sdk_y
-        theta = self._angle_wrap(sdk_theta + self._origin_theta)
-        return x, y, theta
-
-    @staticmethod
-    def _angle_wrap(a):
-        return (a + np.pi) % (2 * np.pi) - np.pi
+        print("[base-bridge] Using world-frame poses (no local conversion)")
 
     def ensure_initialized(self):
         pass
 
     def get_full_state(self):
         state = self._server.get_state()
-        sdk_x, sdk_y, sdk_theta = self._world_to_sdk(
-            state.base_x, state.base_y, state.base_theta)
         return {
-            "base_pose": np.array([sdk_x, sdk_y, sdk_theta]),
+            "base_pose": np.array([state.base_x, state.base_y, state.base_theta]),
             "base_velocity": np.array([state.base_vx, state.base_vy, state.base_wz]),
         }
 
     def execute_action(self, target):
         pose = target["base_pose"]
-        sdk_x, sdk_y, sdk_theta = float(pose[0]), float(pose[1]), float(pose[2])
-        world_x, world_y, world_theta = self._sdk_to_world(sdk_x, sdk_y, sdk_theta)
         self._is_velocity_mode = False
         self._cmd_vel = [0.0, 0.0, 0.0]
-        self._server.set_base_action([world_x, world_y, world_theta])
+        self._server.set_base_action([float(pose[0]), float(pose[1]), float(pose[2])])
 
     def set_target_velocity(self, vel, frame="global"):
         self._cmd_vel = [float(vel[0]), float(vel[1]), float(vel[2])]
