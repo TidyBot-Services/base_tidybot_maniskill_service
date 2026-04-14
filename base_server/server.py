@@ -15,8 +15,9 @@ from .config import BASE_RPC_AUTHKEY, BASE_RPC_PORT
 class SimBase:
     """Simulated base object exposed via RPC."""
 
-    def __init__(self, server):
+    def __init__(self, server, env_idx=0):
         self._server = server
+        self._env_idx = env_idx
         self._cmd_vel = [0.0, 0.0, 0.0]
         self._cmd_time = 0.0
         self._is_velocity_mode = False
@@ -27,7 +28,7 @@ class SimBase:
         pass
 
     def get_full_state(self):
-        state = self._server.get_state()
+        state = self._server.get_state(env_idx=self._env_idx)
         return {
             "base_pose": np.array([state.base_x, state.base_y, state.base_theta]),
             "base_velocity": np.array([state.base_vx, state.base_vy, state.base_wz]),
@@ -37,7 +38,7 @@ class SimBase:
         pose = target["base_pose"]
         self._is_velocity_mode = False
         self._cmd_vel = [0.0, 0.0, 0.0]
-        self._server.set_base_action([float(pose[0]), float(pose[1]), float(pose[2])])
+        self._server.set_base_action([float(pose[0]), float(pose[1]), float(pose[2])], env_idx=self._env_idx)
 
     def set_target_velocity(self, vel, frame="global"):
         self._cmd_vel = [float(vel[0]), float(vel[1]), float(vel[2])]
@@ -62,7 +63,7 @@ class SimBase:
         }
 
 
-_sim_base_instance = None
+_sim_base_instances = {}  # env_idx → SimBase
 
 
 class _SimBaseProxy:
@@ -94,10 +95,6 @@ class _SimBaseProxy:
         return self._real.get_command_state()
 
 
-def _base_factory():
-    return _SimBaseProxy(_sim_base_instance)
-
-
 class _BaseBridgeManager(BaseManager):
     pass
 
@@ -105,8 +102,9 @@ class _BaseBridgeManager(BaseManager):
 class BaseBridge:
     """Protocol bridge: multiprocessing.managers RPC on port 50000."""
 
-    def __init__(self, server, port=BASE_RPC_PORT, authkey=BASE_RPC_AUTHKEY):
+    def __init__(self, server, port=BASE_RPC_PORT, authkey=BASE_RPC_AUTHKEY, env_idx=0):
         self._server = server
+        self._env_idx = env_idx
         self._port = port
         self._authkey = authkey
         self._thread = None
@@ -114,8 +112,8 @@ class BaseBridge:
         self._running = False
 
     def start(self):
-        global _sim_base_instance
-        _sim_base_instance = SimBase(self._server)
+        global _sim_base_instances
+        _sim_base_instances[self._env_idx] = SimBase(self._server, env_idx=self._env_idx)
 
         self._running = True
         self._thread = threading.Thread(target=self._run, daemon=True, name="base-bridge")
@@ -136,13 +134,20 @@ class BaseBridge:
         print("[base-bridge] Stopped")
 
     def _run(self):
-        _BaseBridgeManager.register("Base", callable=_base_factory)
-        self._manager = _BaseBridgeManager(
+        env_idx = self._env_idx
+
+        def _factory():
+            return _SimBaseProxy(_sim_base_instances[env_idx])
+
+        # Each env gets a unique manager class to avoid registration conflicts
+        manager_cls = type(f"_BaseBridgeManager_{env_idx}", (BaseManager,), {})
+        manager_cls.register("Base", callable=_factory)
+        self._manager = manager_cls(
             address=("0.0.0.0", self._port),
             authkey=self._authkey,
         )
         server = self._manager.get_server()
-        print(f"[base-bridge] RPC server listening on port {self._port}")
+        print(f"[base-bridge] RPC server listening on port {self._port} (env {env_idx})")
         try:
             server.serve_forever()
         except Exception as e:
